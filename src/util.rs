@@ -37,6 +37,8 @@ pub struct GenOptions {
     pub nocollide: bool,
     /// Whether to enable quadtree optimization (recommended)
     pub quadtree: bool,
+    /// Height threshold above which to generate full layers
+    pub gen_full_layers_above_height: u32,
 }
 
 /// Convert a single color channel from sRGB gamma to linear gamma

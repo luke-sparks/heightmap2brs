@@ -47,6 +47,7 @@ pub struct HeightmapApp {
     opt_hdmap: bool,
     opt_snap: bool,
     opt_glow: bool,
+    gen_full_layers_above_height: u32,
     mode: BrickMode,
     progress: Progress,
     progress_channel: (Sender<Progress>, Receiver<Progress>),
@@ -73,6 +74,7 @@ impl Default for HeightmapApp {
             opt_snap: false,
             opt_glow: false,
             opt_hdmap: false,
+            gen_full_layers_above_height: 0,
             mode: BrickMode::Default,
             promise: None,
             progress: ("Pending", 0.),
@@ -101,6 +103,7 @@ impl HeightmapApp {
             lrgb: self.opt_lrgb,
             nocollide: self.opt_nocollide,
             quadtree: self.opt_quad,
+            gen_full_layers_above_height: self.gen_full_layers_above_height,
         };
 
         if options.tile {
@@ -238,6 +241,10 @@ impl HeightmapApp {
                 ui.label("Vertical Size")
                     .on_hover_text("The height of each shade of grey from the heightmap");
                 ui.add(egui::Slider::new(&mut self.vertical_scale, 1..=100).text("units"));
+                ui.end_row();
+                ui.label("Generate Full Layers Above Height")
+                    .on_hover_text("Height threshold above which to generate full layers (0 = disabled)");
+                ui.add(egui::Slider::new(&mut self.gen_full_layers_above_height, 0..=100).text("units"));
                 ui.end_row();
 
                 ui.label("Options")

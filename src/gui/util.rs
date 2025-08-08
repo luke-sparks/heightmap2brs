@@ -37,7 +37,7 @@ pub fn maps_from_files(
     let heightmap: Box<dyn Heightmap> =
         if heightmap_files.iter().all(|f| file_ext(f) == Some("png")) {
             if options.img {
-                Box::new(HeightmapFlat::new(colormap.size()).unwrap())
+                Box::new(HeightmapFlat::new(colormap.size(), options.scale).unwrap())
             } else {
                 match HeightmapPNG::new(
                     heightmap_files.iter().map(|s| s.as_ref()).collect(),

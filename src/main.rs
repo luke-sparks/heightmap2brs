@@ -34,6 +34,7 @@ fn main() {
         // Scaling and sizing options
         (@arg vertical: -v --vertical +takes_value "Vertical scale multiplier (default 1)")
         (@arg size: -s --size +takes_value "Brick stud size (default 1)")
+        (@arg gen_full_layers_above: --gen-full-layers +takes_value "Generate full layers above this height (default 0)")
         // Optimization and rendering flags
         (@arg cull: --cull "Automatically remove bottom level bricks and fully transparent bricks")
         (@arg tile: --tile "Render bricks as tiles")
@@ -105,6 +106,11 @@ fn main() {
         lrgb: matches.is_present("lrgb"),   // Use linear RGB instead of sRGB
         nocollide: matches.is_present("nocollide"), // Disable collision
         quadtree: true, // Always enable quadtree optimization
+        gen_full_layers_above_height: matches
+            .value_of("gen_full_layers_above")
+            .unwrap_or("0")
+            .parse::<u32>()
+            .expect("Generate full layers above height must be integer"),
     };
 
     // Set the appropriate brick asset index based on brick type
