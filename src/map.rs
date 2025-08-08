@@ -112,13 +112,17 @@ pub struct HeightmapFlat {
     width: u32,
     /// Height of the flat heightmap in pixels/studs  
     height: u32,
+    /// Scale value to use for the uniform elevation
+    scale: u32,
 }
 
 /// Implementation of the Heightmap trait for flat heightmaps
 /// Returns a constant height value for all coordinates
 impl Heightmap for HeightmapFlat {
     fn at(&self, _x: u32, _y: u32) -> u32 {
-        1
+        // Return the configured scale value for all positions in flat heightmaps
+        // This creates a uniform elevation surface at the desired height
+        self.scale
     }
 
     fn size(&self) -> (u32, u32) {
@@ -128,16 +132,17 @@ impl Heightmap for HeightmapFlat {
 
 /// Implementation block for HeightmapFlat construction
 impl HeightmapFlat {
-    /// Create a new flat heightmap with the given dimensions
+    /// Create a new flat heightmap with the given dimensions and scale
     /// 
     /// # Arguments
     /// * `(width, height)` - Tuple containing the dimensions in pixels
+    /// * `scale` - The uniform height value to return for all positions
     /// 
     /// # Returns
     /// * `Ok(HeightmapFlat)` - Always succeeds since flat heightmaps are simple
-    pub fn new((width, height): (u32, u32)) -> Result<Self, String> {
--       // return a reference to save on memory
--       Ok(HeightmapFlat { width, height })
+    pub fn new((width, height): (u32, u32), scale: u32) -> Result<Self, String> {
+        // return a reference to save on memory
+        Ok(HeightmapFlat { width, height, scale })
     }
 }
 
