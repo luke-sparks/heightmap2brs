@@ -34,7 +34,7 @@ fn main() {
         // Scaling and sizing options
         (@arg vertical: -v --vertical +takes_value "Vertical scale multiplier (default 1)")
         (@arg size: -s --size +takes_value "Brick stud size (default 1)")
-        (@arg gen_full_layers_above: --gen-full-layers +takes_value "Generate full layers above this height (default 0)")
+        (@arg gen_full_layers_above: --gen_full_layers +takes_value "Generate full layers above this height (default 0)")
         // Optimization and rendering flags
         (@arg cull: --cull "Automatically remove bottom level bricks and fully transparent bricks")
         (@arg tile: --tile "Render bricks as tiles")

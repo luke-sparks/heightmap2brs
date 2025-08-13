@@ -40,6 +40,9 @@ pub struct QuadTree {
     /// Boxed array of all tiles in the quadtree
     /// Using Box<[Tile]> for memory efficiency with large grids
     tiles: Box<[Tile]>,
+    /// Additional tile vectors for different height layers
+    /// Each vector represents tiles at a specific height level
+    height_layers: Vec<Box<[Tile]>>,
     /// Width of the original heightmap/grid
     width: u32,
     /// Height of the original heightmap/grid
@@ -102,11 +105,12 @@ impl QuadTree {
     /// # Arguments
     /// * `heightmap` - Source of elevation data
     /// * `colormap` - Source of color data
+    /// * `gen_full_layers_above_height` - Height threshold above which to generate full layers
     /// 
     /// # Returns
     /// * `Ok(QuadTree)` if images have matching dimensions
     /// * `Err(String)` if dimensions don't match
-    pub fn new(heightmap: &dyn Heightmap, colormap: &dyn Colormap) -> Result<Self, String> {
+    pub fn new(heightmap: &dyn Heightmap, colormap: &dyn Colormap, gen_full_layers_above_height: u32) -> Result<Self, String> {
         let (width, height) = heightmap.size();
 
         // Validate that both input images have matching dimensions
@@ -114,57 +118,204 @@ impl QuadTree {
             return Err("Heightmap and colormap must have same dimensions".to_string());
         }
 
-        // Pre-allocate vector with exact capacity for efficiency
-        let mut tiles = Vec::with_capacity((width * height) as usize);
-
-        // Create one tile for each pixel in the heightmap
-        // Using i32 for loop variables to allow negative values in neighbor calculations
-        for x in 0..width as i32 {
-            for y in 0..height as i32 {
-                tiles.push(Tile {
-                    // Calculate unique index for this tile in the flattened grid
-                    index: (x + y * height as i32) as usize,
-                    // Store the center coordinates of this tile
-                    center: (x as u32, y as u32),
-                    // Collect height values from all valid neighboring pixels
-                    // These are used later to calculate relative height differences
-                    neighbors: vec![(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
-                        .into_iter()
-                        // Filter out neighbors that are outside the image bounds
-                        .filter(|(x, y)| {
-                            *x >= 0 && *x < width as i32 && *y >= 0 && *y < height as i32
-                        })
-                        // Get height value for each valid neighbor
-                        .map(|(x, y)| heightmap.at(x as u32, y as u32))
-                        // Collect unique height values into a HashSet
-                        .fold(HashSet::new(), |mut set, height| {
-                            set.insert(height);
-                            set
-                        }),
-                    // Start with size 1x1 (single pixel)
-                    size: (1, 1),
-                    // Get color from colormap at this position
-                    color: colormap.at(x as u32, y as u32),
-                    // Get elevation from heightmap at this position
-                    height: heightmap.at(x as u32, y as u32),
-                    // Initially no parent (not merged)
-                    parent: None,
-                })
+        // First pass: collect all possible heights in the heightmap
+        let mut all_heights = HashSet::new();
+        for x in 0..width {
+            for y in 0..height {
+                all_heights.insert(heightmap.at(x, y));
             }
         }
 
-        // Convert vector to boxed slice for memory efficiency and immutability
-        Ok(QuadTree {
-            tiles: tiles.into_boxed_slice(),
-            width,
-            height,
-        })
-    }
+        // Filter heights: keep all heights above gen_full_layers_above_height,
+        // and only the highest height at or below gen_full_layers_above_height
+        let filtered_heights: HashSet<u32> = if gen_full_layers_above_height > 0 {
+            let mut heights_at_or_below: Vec<u32> = all_heights
+                .iter()
+                .cloned()
+                .filter(|&h| h <= gen_full_layers_above_height)
+                .collect();
+            heights_at_or_below.sort();
+            
+            let mut result = HashSet::new();
+            
+            // Add all heights above the threshold
+            for &height in &all_heights {
+                if height > gen_full_layers_above_height {
+                    result.insert(height);
+                }
+            }
+            
+            // Add only the highest height at or below the threshold
+            if let Some(&highest_at_or_below) = heights_at_or_below.last() {
+                result.insert(highest_at_or_below);
+            }
+            
+            result
+        } else {
+            // If gen_full_layers_above_height is 0, keep all heights
+            all_heights
+        };
 
-    /// Convert 2D coordinates to a linear index in the tiles array
-    /// Uses column-major order: index = y + x * height
-    fn index(&self, x: u32, y: u32) -> usize {
-        (y + x * self.height) as usize
+        if gen_full_layers_above_height > 0 && !filtered_heights.is_empty() {
+            // Get minimum height from filtered_heights for capping
+            let min_filtered_height = *filtered_heights.iter().min().unwrap();
+            
+            // Create a sorted vector of filtered heights for consistent ordering
+            let mut sorted_heights: Vec<u32> = filtered_heights.iter().cloned().collect();
+            sorted_heights.sort();
+            
+            // Create tiles vector for the first layer (capped heights)
+            let mut first_layer_tiles = Vec::with_capacity((width * height) as usize);
+            
+            // Create one tile for each pixel in the heightmap
+            // Using i32 for loop variables to allow negative values in neighbor calculations
+            for x in 0..width as i32 {
+                for y in 0..height as i32 {
+                    let original_height = heightmap.at(x as u32, y as u32);
+                    // For first layer: keep original height if it's <= min_filtered_height,
+                    // otherwise cap it to min_filtered_height
+                    let capped_height = if original_height > min_filtered_height {
+                        min_filtered_height
+                    } else {
+                        original_height
+                    };
+                    
+                    first_layer_tiles.push(Tile {
+                        // Calculate unique index for this tile in the flattened grid
+                        index: (x + y * height as i32) as usize,
+                        // Store the center coordinates of this tile
+                        center: (x as u32, y as u32),
+                        // Collect height values from all valid neighboring pixels
+                        // These are used later to calculate relative height differences
+                        neighbors: vec![(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                            .into_iter()
+                            // Filter out neighbors that are outside the image bounds
+                            .filter(|(x, y)| {
+                                *x >= 0 && *x < width as i32 && *y >= 0 && *y < height as i32
+                            })
+                            // Get height value for each valid neighbor
+                            .map(|(x, y)| heightmap.at(x as u32, y as u32))
+                            // Collect unique height values into a HashSet
+                            .fold(HashSet::new(), |mut set, height| {
+                                set.insert(height);
+                                set
+                            }),
+                        // Start with size 1x1 (single pixel)
+                        size: (1, 1),
+                        // Get color from colormap at this position
+                        color: colormap.at(x as u32, y as u32),
+                        // Use capped height for this layer
+                        height: capped_height,
+                        // Initially no parent (not merged)
+                        parent: None,
+                    })
+                }
+            }
+            
+            // Create additional layers for remaining heights
+            let mut height_layers = Vec::new();
+            for &layer_height in &sorted_heights[1..] {  // Skip first height as it's already in main tiles
+                let mut layer_tiles = Vec::with_capacity((width * height) as usize);
+                
+                for x in 0..width as i32 {
+                    for y in 0..height as i32 {
+                        let original_height = heightmap.at(x as u32, y as u32);
+                        // Only use layer height if original height matches, otherwise use 0
+                        let tile_height = if original_height == layer_height {
+                            layer_height
+                        } else {
+                            0
+                        };
+                        
+                        layer_tiles.push(Tile {
+                            // Calculate unique index for this tile in the flattened grid
+                            index: (x + y * height as i32) as usize,
+                            // Store the center coordinates of this tile
+                            center: (x as u32, y as u32),
+                            // Collect height values from all valid neighboring pixels
+                            neighbors: vec![(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                                .into_iter()
+                                // Filter out neighbors that are outside the image bounds
+                                .filter(|(x, y)| {
+                                    *x >= 0 && *x < width as i32 && *y >= 0 && *y < height as i32
+                                })
+                                // Get height value for each valid neighbor
+                                .map(|(x, y)| heightmap.at(x as u32, y as u32))
+                                // Collect unique height values into a HashSet
+                                .fold(HashSet::new(), |mut set, height| {
+                                    set.insert(height);
+                                    set
+                                }),
+                            // Start with size 1x1 (single pixel)
+                            size: (1, 1),
+                            // Get color from colormap at this position
+                            color: colormap.at(x as u32, y as u32),
+                            // Use layer height only if original matches, otherwise 0
+                            height: tile_height,
+                            // Initially no parent (not merged)
+                            parent: None,
+                        })
+                    }
+                }
+                height_layers.push(layer_tiles.into_boxed_slice());
+            }
+            
+            // Convert vector to boxed slice for memory efficiency and immutability
+            Ok(QuadTree {
+                tiles: first_layer_tiles.into_boxed_slice(),
+                height_layers,
+                width,
+                height,
+            })
+        } else {
+            // Original behavior when gen_full_layers_above_height is 0
+            // Pre-allocate vector with exact capacity for efficiency
+            let mut tiles = Vec::with_capacity((width * height) as usize);
+
+            // Create one tile for each pixel in the heightmap
+            // Using i32 for loop variables to allow negative values in neighbor calculations
+            for x in 0..width as i32 {
+                for y in 0..height as i32 {
+                    tiles.push(Tile {
+                        // Calculate unique index for this tile in the flattened grid
+                        index: (x + y * height as i32) as usize,
+                        // Store the center coordinates of this tile
+                        center: (x as u32, y as u32),
+                        // Collect height values from all valid neighboring pixels
+                        // These are used later to calculate relative height differences
+                        neighbors: vec![(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                            .into_iter()
+                            // Filter out neighbors that are outside the image bounds
+                            .filter(|(x, y)| {
+                                *x >= 0 && *x < width as i32 && *y >= 0 && *y < height as i32
+                            })
+                            // Get height value for each valid neighbor
+                            .map(|(x, y)| heightmap.at(x as u32, y as u32))
+                            // Collect unique height values into a HashSet
+                            .fold(HashSet::new(), |mut set, height| {
+                                set.insert(height);
+                                set
+                            }),
+                        // Start with size 1x1 (single pixel)
+                        size: (1, 1),
+                        // Get color from colormap at this position
+                        color: colormap.at(x as u32, y as u32),
+                        // Get elevation from heightmap at this position
+                        height: heightmap.at(x as u32, y as u32),
+                        // Initially no parent (not merged)
+                        parent: None,
+                    })
+                }
+            }
+
+            // Convert vector to boxed slice for memory efficiency and immutability
+            Ok(QuadTree {
+                tiles: tiles.into_boxed_slice(),
+                height_layers: Vec::new(),
+                width,
+                height,
+            })
+        }
     }
 
     /// Perform quadtree optimization at a specific level
@@ -182,25 +333,49 @@ impl QuadTree {
         let space = 2_u32.pow(level);        // Size of tiles at this level (1, 2, 4, 8, ...)
         let step_amt = space as usize * 2;   // Step between tile groups (skip already merged tiles)
 
+        // Optimize main tiles vector
+        count += Self::quad_optimize_tiles(&mut self.tiles, self.width, self.height, space, step_amt);
+
+        // Optimize each height layer if they exist
+        for layer in &mut self.height_layers {
+            count += Self::quad_optimize_tiles(layer, self.width, self.height, space, step_amt);
+        }
+
+        count
+    }
+
+    /// Helper function to perform quadtree optimization on a specific tiles array
+    /// 
+    /// # Arguments
+    /// * `tiles` - The tiles array to optimize (either main tiles or a height layer)
+    /// * `width` - Width of the tile grid
+    /// * `height` - Height of the tile grid
+    /// * `space` - Size of tiles at this level
+    /// * `step_amt` - Step between tile groups
+    /// 
+    /// # Returns
+    /// * Number of tiles that were successfully merged in this array
+    fn quad_optimize_tiles(tiles: &mut [Tile], width: u32, height: u32, space: u32, step_amt: usize) -> usize {
+        let mut count = 0;
+
         // Iterate through the grid in steps, checking 2x2 tile groups for merging
-        for x in (0..self.width - space).step_by(step_amt) {
-            for y in (0..self.height - space).step_by(step_amt) {
+        for x in (0..width - space).step_by(step_amt) {
+            for y in (0..height - space).step_by(step_amt) {
                 // Use complex array slicing to get mutable references to 4 adjacent tiles
                 // This is needed because Rust's borrow checker doesn't allow multiple
                 // mutable references to the same array normally
                 
                 // Split the tiles array vertically at x+space boundary
-                let (left, right) = self
-                    .tiles
-                    .split_at_mut(((x + space) * self.height) as usize);
+                let (left, right) = tiles
+                    .split_at_mut(((x + space) * height) as usize);
 
                 // Split left and right columns horizontally at y+space boundary  
                 let (top_left, bottom_left) =
-                    left.split_at_mut((y + space + x * self.height) as usize);
+                    left.split_at_mut((y + space + x * height) as usize);
                 let (top_right, bottom_right) = right.split_at_mut((y + space) as usize);
 
                 // Extract the specific tile we want from each slice
-                let top_left = &mut top_left[(y + x * self.height) as usize];
+                let top_left = &mut top_left[(y + x * height) as usize];
                 let bottom_left = &mut bottom_left[0];
                 let top_right = &mut top_right[y as usize];
                 let bottom_right = &mut bottom_right[0];
@@ -230,9 +405,10 @@ impl QuadTree {
     /// This optimization reduces brick count by combining adjacent similar tiles
     /// 
     /// # Arguments
+    /// * `tiles` - The tiles array to operate on
     /// * `start_i` - Index of the first tile in the line (becomes the parent)
     /// * `children` - Vector of indices of tiles to merge into the first tile
-    fn merge_line(&mut self, start_i: usize, children: Vec<usize>) {
+    fn merge_line(tiles: &mut [Tile], start_i: usize, children: Vec<usize>) {
         // Early return if no tiles to merge
         if children.is_empty() {
             return;
@@ -244,11 +420,11 @@ impl QuadTree {
         // Determine if this is a vertical or horizontal line merge
         // Vertical: same X coordinate (tiles stacked vertically)
         // Horizontal: same Y coordinate (tiles arranged horizontally) 
-        let is_vertical = self.tiles[children[0]].center.0 == self.tiles[start_i].center.0;
+        let is_vertical = tiles[children[0]].center.0 == tiles[start_i].center.0;
 
         // Process each child tile: set parent and accumulate size
         let new_size = children.iter().fold(0, |sum, &i| {
-            let mut t = &mut self.tiles[i];
+            let t = &mut tiles[i];
             // Mark this tile as merged into the parent
             t.parent = Some(start_i);
             // Collect neighbor heights for the parent tile
@@ -259,7 +435,7 @@ impl QuadTree {
         });
 
         // Update the parent tile with merged information
-        let mut start = &mut self.tiles[start_i];
+        let start = &mut tiles[start_i];
 
         // Combine neighbor height sets from all merged tiles
         for n in new_neighbors {
@@ -284,11 +460,35 @@ impl QuadTree {
     /// * Number of tiles that were merged
     pub fn line_optimize(&mut self, tile_scale: u32) -> usize {
         let mut count = 0;
+
+        // Optimize main tiles vector
+        count += Self::line_optimize_tiles(&mut self.tiles, self.width, self.height, tile_scale);
+
+        // Optimize each height layer if they exist
+        for layer in &mut self.height_layers {
+            count += Self::line_optimize_tiles(layer, self.width, self.height, tile_scale);
+        }
+
+        count
+    }
+
+    /// Helper function to perform line optimization on a specific tiles array
+    /// 
+    /// # Arguments
+    /// * `tiles` - The tiles array to optimize (either main tiles or a height layer)
+    /// * `width` - Width of the tile grid
+    /// * `height` - Height of the tile grid
+    /// * `tile_scale` - Scale factor for tile sizing (used to enforce size limits)
+    /// 
+    /// # Returns
+    /// * Number of tiles that were merged in this array
+    fn line_optimize_tiles(tiles: &mut [Tile], width: u32, height: u32, tile_scale: u32) -> usize {
+        let mut count = 0;
         // Check every tile in the grid as a potential start of a line merge
-        for x in 0..self.width {
-            for y in 0..self.height {
-                let start_i = self.index(x, y);
-                let start = &self.tiles[start_i];
+        for x in 0..width {
+            for y in 0..height {
+                let start_i = (y + x * height) as usize;  // Calculate index inline
+                let start = &tiles[start_i];
                 // Skip tiles that have already been merged into other tiles
                 if start.parent.is_some() {
                     continue;
@@ -302,9 +502,9 @@ impl QuadTree {
                 let mut vert_tiles = vec![]; // Tiles to merge vertically
 
                 // Find the longest possible horizontal merge from this position
-                while x + sx < self.width {
-                    let i = self.index(x + sx, y);
-                    let t = &self.tiles[i];
+                while x + sx < width {
+                    let i = (y + (x + sx) * height) as usize;
+                    let t = &tiles[i];
                     // Stop if the resulting brick would be too large or tiles aren't similar
                     if (sx + t.size.0) * tile_scale > 500 || !start.similar_line(t) {
                         break;
@@ -314,9 +514,9 @@ impl QuadTree {
                 }
 
                 // Find the longest possible vertical merge from this position
-                while y + sy < self.height {
-                    let i = self.index(x, y + sy);
-                    let t = &self.tiles[i];
+                while y + sy < height {
+                    let i = (y + sy + x * height) as usize;
+                    let t = &tiles[i];
                     // Stop if the resulting brick would be too large or tiles aren't similar
                     if (sy + t.size.1) * tile_scale > 500 || !start.similar_line(t) {
                         break;
@@ -329,7 +529,8 @@ impl QuadTree {
                 count += max(horiz_tiles.len(), vert_tiles.len());
 
                 // Perform the merge for whichever direction gives more reduction
-                self.merge_line(
+                Self::merge_line(
+                    tiles,
                     start_i,
                     if horiz_tiles.len() > vert_tiles.len() {
                         horiz_tiles  // Merge horizontally if it's longer
@@ -352,7 +553,31 @@ impl QuadTree {
     /// # Returns
     /// * Vector of Brick objects ready for writing to a save file
     pub fn into_bricks(&self, options: GenOptions) -> Vec<Brick> {
-        self.tiles
+        let mut all_bricks = Vec::new();
+        
+        // Process main tiles vector
+        let main_bricks = Self::tiles_to_bricks(&self.tiles, &options);
+        all_bricks.extend(main_bricks);
+        
+        // Process each height layer vector
+        for layer in &self.height_layers {
+            let layer_bricks = Self::tiles_to_bricks(layer, &options);
+            all_bricks.extend(layer_bricks);
+        }
+        
+        all_bricks
+    }
+    
+    /// Helper function to convert a tiles vector into bricks
+    /// 
+    /// # Arguments
+    /// * `tiles` - The tiles vector to convert
+    /// * `options` - Generation options controlling brick properties
+    /// 
+    /// # Returns
+    /// * Vector of Brick objects created from the tiles
+    fn tiles_to_bricks(tiles: &[Tile], options: &GenOptions) -> Vec<Brick> {
+        tiles
             .iter()
             .flat_map(|t| {
                 // Skip tiles that have been merged or should be culled
@@ -476,7 +701,7 @@ pub fn gen_opt_heightmap<F: Fn(f32) -> bool>(
     info!("Building initial quadtree");
     let (width, height) = heightmap.size();
     let area = width * height;  // Total number of pixels/potential bricks
-    let mut quad = QuadTree::new(heightmap, colormap)?;  // Create initial 1:1 tile grid
+    let mut quad = QuadTree::new(heightmap, colormap, options.gen_full_layers_above_height)?;  // Create initial 1:1 tile grid
     progress!(0.2);  // Report 20% progress after quadtree initialization
 
     // Determine progress tracking based on whether quadtree optimization is enabled
