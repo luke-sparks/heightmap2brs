@@ -8,7 +8,7 @@ use log::info;
 // Import standard library items
 use std::{
     cmp::{max, min},      // For finding minimum and maximum values
-    collections::HashSet, // For storing unique neighbor height values
+    collections::{HashMap, HashSet}, // For storing unique neighbor height values and height-color mappings
 };
 
 /// Represents a single tile in the quadtree optimization structure
@@ -43,6 +43,9 @@ pub struct QuadTree {
     /// Additional tile vectors for different height layers
     /// Each vector represents tiles at a specific height level
     height_layers: Vec<Box<[Tile]>>,
+    /// Sorted heights used for layer generation
+    /// Used to calculate z_adjustment for each layer
+    sorted_heights: Vec<u32>,
     /// Width of the original heightmap/grid
     width: u32,
     /// Height of the original heightmap/grid
@@ -118,36 +121,40 @@ impl QuadTree {
             return Err("Heightmap and colormap must have same dimensions".to_string());
         }
 
-        // First pass: collect all possible heights in the heightmap
-        let mut all_heights = HashSet::new();
+        // First pass: collect all possible heights and their colors in the heightmap
+        let mut all_heights = HashMap::new();
         for x in 0..width {
             for y in 0..height {
-                all_heights.insert(heightmap.at(x, y));
+                let height = heightmap.at(x, y);
+                let color = colormap.at(x, y);
+                all_heights.insert(height, color);
             }
         }
 
         // Filter heights: keep all heights above gen_full_layers_above_height,
         // and only the highest height at or below gen_full_layers_above_height
-        let filtered_heights: HashSet<u32> = if gen_full_layers_above_height > 0 {
+        let filtered_heights: HashMap<u32, [u8; 4]> = if gen_full_layers_above_height > 0 {
             let mut heights_at_or_below: Vec<u32> = all_heights
-                .iter()
+                .keys()
                 .cloned()
                 .filter(|&h| h <= gen_full_layers_above_height)
                 .collect();
             heights_at_or_below.sort();
             
-            let mut result = HashSet::new();
+            let mut result = HashMap::new();
             
             // Add all heights above the threshold
-            for &height in &all_heights {
+            for (&height, &color) in &all_heights {
                 if height > gen_full_layers_above_height {
-                    result.insert(height);
+                    result.insert(height, color);
                 }
             }
             
             // Add only the highest height at or below the threshold
             if let Some(&highest_at_or_below) = heights_at_or_below.last() {
-                result.insert(highest_at_or_below);
+                if let Some(&color) = all_heights.get(&highest_at_or_below) {
+                    result.insert(highest_at_or_below, color);
+                }
             }
             
             result
@@ -158,10 +165,10 @@ impl QuadTree {
 
         if gen_full_layers_above_height > 0 && !filtered_heights.is_empty() {
             // Get minimum height from filtered_heights for capping
-            let min_filtered_height = *filtered_heights.iter().min().unwrap();
+            let min_filtered_height = *filtered_heights.keys().min().unwrap();
             
             // Create a sorted vector of filtered heights for consistent ordering
-            let mut sorted_heights: Vec<u32> = filtered_heights.iter().cloned().collect();
+            let mut sorted_heights: Vec<u32> = filtered_heights.keys().cloned().collect();
             sorted_heights.sort();
             
             // Create tiles vector for the first layer (capped heights)
@@ -203,7 +210,11 @@ impl QuadTree {
                         // Start with size 1x1 (single pixel)
                         size: (1, 1),
                         // Get color from colormap at this position
-                        color: colormap.at(x as u32, y as u32),
+                        color: if capped_height == min_filtered_height {
+                            filtered_heights[&min_filtered_height]
+                        } else {
+                            colormap.at(x as u32, y as u32)
+                        },
                         // Use capped height for this layer
                         height: capped_height,
                         // Initially no parent (not merged)
@@ -216,12 +227,13 @@ impl QuadTree {
             let mut height_layers = Vec::new();
             for &layer_height in &sorted_heights[1..] {  // Skip first height as it's already in main tiles
                 let mut layer_tiles = Vec::with_capacity((width * height) as usize);
+                let layer_color = filtered_heights[&layer_height];  // Get the stored color for this height
                 
                 for x in 0..width as i32 {
                     for y in 0..height as i32 {
                         let original_height = heightmap.at(x as u32, y as u32);
                         // Only use layer height if original height matches, otherwise use 0
-                        let tile_height = if original_height == layer_height {
+                        let tile_height = if original_height >= layer_height {
                             layer_height
                         } else {
                             0
@@ -248,8 +260,8 @@ impl QuadTree {
                                 }),
                             // Start with size 1x1 (single pixel)
                             size: (1, 1),
-                            // Get color from colormap at this position
-                            color: colormap.at(x as u32, y as u32),
+                            // Use the color that was stored for this height instead of querying colormap
+                            color: layer_color,
                             // Use layer height only if original matches, otherwise 0
                             height: tile_height,
                             // Initially no parent (not merged)
@@ -264,6 +276,7 @@ impl QuadTree {
             Ok(QuadTree {
                 tiles: first_layer_tiles.into_boxed_slice(),
                 height_layers,
+                sorted_heights,
                 width,
                 height,
             })
@@ -312,6 +325,7 @@ impl QuadTree {
             Ok(QuadTree {
                 tiles: tiles.into_boxed_slice(),
                 height_layers: Vec::new(),
+                sorted_heights: Vec::new(),
                 width,
                 height,
             })
@@ -556,12 +570,19 @@ impl QuadTree {
         let mut all_bricks = Vec::new();
         
         // Process main tiles vector
-        let main_bricks = Self::tiles_to_bricks(&self.tiles, &options);
+        let main_bricks = Self::tiles_to_bricks(&self.tiles, &options, 0);
         all_bricks.extend(main_bricks);
         
         // Process each height layer vector
-        for layer in &self.height_layers {
-            let layer_bricks = Self::tiles_to_bricks(layer, &options);
+        for (i, layer) in self.height_layers.iter().enumerate() {
+            // Calculate height_adjustment as the height of the previous index in sorted_heights
+            // Layer i corresponds to sorted_heights[i+1], so previous is sorted_heights[i]
+            let height_adjustment = if self.sorted_heights.is_empty() {
+                0
+            } else {
+                self.sorted_heights[i]
+            };
+            let layer_bricks = Self::tiles_to_bricks(layer, &options, height_adjustment);
             all_bricks.extend(layer_bricks);
         }
         
@@ -573,10 +594,17 @@ impl QuadTree {
     /// # Arguments
     /// * `tiles` - The tiles vector to convert
     /// * `options` - Generation options controlling brick properties
+    /// * `height_adjustment` - Value to adjust the height of bricks by
     /// 
     /// # Returns
     /// * Vector of Brick objects created from the tiles
-    fn tiles_to_bricks(tiles: &[Tile], options: &GenOptions) -> Vec<Brick> {
+    fn tiles_to_bricks(tiles: &[Tile], options: &GenOptions, height_adjustment: u32) -> Vec<Brick> {
+        let pos_adjust = if height_adjustment == 0 {
+            0
+        } else {
+            4
+        };
+
         tiles
             .iter()
             .flat_map(|t| {
@@ -588,12 +616,16 @@ impl QuadTree {
                 }
 
                 // Calculate the Z position (vertical placement) of this brick
-                let mut z = (options.scale * t.height) as i32;
+                let mut z = if t.height == 0 {
+                    0
+                } else {
+                    (options.scale * t.height) as i32
+                };
 
                 // Calculate brick height based on height difference with neighbors
                 // This creates natural-looking terrain with varying brick heights
                 let raw_height = max(
-                    t.height as i32 - t.neighbors.iter().cloned().min().unwrap_or(0) as i32 + 1,
+                    t.height as i32 - height_adjustment as i32,
                     2,  // Minimum height of 2 units
                 );
                 // Apply scaling and ensure minimum height
@@ -630,14 +662,14 @@ impl QuadTree {
                             if options.img && options.micro {
                                 options.size
                             } else {
-                                height  // Otherwise use calculated height
+                                height - pos_adjust as u32  // Otherwise use calculated height
                             },
                         ),
                         // Calculate brick position in 3D space
                         position: (
                             ((t.center.0 * 2 + t.size.0) * options.size) as i32,  // X position (centered on tile)
                             ((t.center.1 * 2 + t.size.1) * options.size) as i32,  // Y position (centered on tile)
-                            z - height as i32 + 2,  // Z position (bottom of brick at terrain level)
+                            z - height as i32 + pos_adjust as i32,  // Z position (bottom of brick at terrain level)
                         ),
                         // Set collision properties based on options
                         collision: Collision {
