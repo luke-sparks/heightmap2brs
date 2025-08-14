@@ -46,6 +46,12 @@ pub struct QuadTree {
     /// Sorted heights used for layer generation
     /// Used to calculate z_adjustment for each layer
     sorted_heights: Vec<u32>,
+    /// Colors that were found at height 0
+    /// Used to determine height adjustment for layers
+    height_0_colors: HashSet<[u8; 4]>,
+    /// Mapping from height to color for filtered heights
+    /// Used to determine which color corresponds to each height
+    filtered_heights: HashMap<u32, [u8; 4]>,
     /// Width of the original heightmap/grid
     width: u32,
     /// Height of the original heightmap/grid
@@ -123,10 +129,14 @@ impl QuadTree {
 
         // First pass: collect all possible heights and their colors in the heightmap
         let mut all_heights = HashMap::new();
+        let mut height_0_colors = HashSet::new();
         for x in 0..width {
             for y in 0..height {
                 let height = heightmap.at(x, y);
                 let color = colormap.at(x, y);
+                if height == 0 {
+                    height_0_colors.insert(color);
+                }
                 all_heights.insert(height, color);
             }
         }
@@ -228,16 +238,37 @@ impl QuadTree {
             for &layer_height in &sorted_heights[1..] {  // Skip first height as it's already in main tiles
                 let mut layer_tiles = Vec::with_capacity((width * height) as usize);
                 let layer_color = filtered_heights[&layer_height];  // Get the stored color for this height
+                let is_lake_layer = height_0_colors.contains(&layer_color);
+
+                // check layer color against ocean
+                // if layer color is ocean and current color != layer color, set height to 0
                 
                 for x in 0..width as i32 {
                     for y in 0..height as i32 {
                         let original_height = heightmap.at(x as u32, y as u32);
-                        // Only use layer height if original height matches, otherwise use 0
-                        let tile_height = if original_height >= layer_height {
-                            layer_height
+                        let pixel_color = colormap.at(x as u32, y as u32);
+
+                        // Set tile height based on whether we're working on a lake or not
+                        let tile_height = if is_lake_layer {
+                            if pixel_color == layer_color && original_height == layer_height {
+                                layer_height
+                            } else {
+                                0
+                            }
                         } else {
-                            0
+                            if original_height >= layer_height {
+                                layer_height
+                            } else {
+                                0
+                            }
                         };
+                        
+                        // Set tile height based on correspondence and original height
+                        // let tile_height = if color_corresponds_to_height_0 && original_height >= layer_height {
+                        //     layer_height
+                        // } else {
+                        //     0
+                        // };
                         
                         layer_tiles.push(Tile {
                             // Calculate unique index for this tile in the flattened grid
@@ -277,6 +308,8 @@ impl QuadTree {
                 tiles: first_layer_tiles.into_boxed_slice(),
                 height_layers,
                 sorted_heights,
+                height_0_colors,
+                filtered_heights,
                 width,
                 height,
             })
@@ -326,6 +359,8 @@ impl QuadTree {
                 tiles: tiles.into_boxed_slice(),
                 height_layers: Vec::new(),
                 sorted_heights: Vec::new(),
+                height_0_colors: HashSet::new(),
+                filtered_heights: HashMap::new(),
                 width,
                 height,
             })
@@ -575,12 +610,34 @@ impl QuadTree {
         
         // Process each height layer vector
         for (i, layer) in self.height_layers.iter().enumerate() {
-            // Calculate height_adjustment as the height of the previous index in sorted_heights
-            // Layer i corresponds to sorted_heights[i+1], so previous is sorted_heights[i]
+            // Calculate height_adjustment based on height_0_colors logic
+            // Layer i corresponds to sorted_heights[i+1]
             let height_adjustment = if self.sorted_heights.is_empty() {
                 0
             } else {
-                self.sorted_heights[i]
+                let current_height_index = i;
+                if current_height_index < self.sorted_heights.len() {
+                    let current_height = self.sorted_heights[current_height_index];
+                    // Check if height_0_colors contains the color for this height
+                    if let Some(&color) = self.filtered_heights.get(&current_height) {
+                        if self.height_0_colors.contains(&color) {
+                            // If height_0_colors contains the color for sorted_heights[i], use sorted_heights[i-1]
+                            if current_height_index > 0 {
+                                self.sorted_heights[current_height_index - 1]
+                            } else {
+                                0
+                            }
+                        } else {
+                            // Use the current height as before
+                            self.sorted_heights[i]
+                        }
+                    } else {
+                        // Fallback to previous behavior
+                        self.sorted_heights[i]
+                    }
+                } else {
+                    self.sorted_heights[i]
+                }
             };
             let layer_bricks = Self::tiles_to_bricks(layer, &options, height_adjustment);
             all_bricks.extend(layer_bricks);
