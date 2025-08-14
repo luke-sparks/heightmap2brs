@@ -667,7 +667,7 @@ impl QuadTree {
             .flat_map(|t| {
                 // Skip tiles that have been merged or should be culled
                 if t.parent.is_some()  // Skip merged tiles
-                    || options.cull && (t.height == 0 || t.color[3] == 0)  // Skip transparent/ground tiles if culling enabled
+                    || options.cull && (t.color[3] == 0)  // Skip transparent tiles if culling enabled
                 {
                     return vec![];
                 }
@@ -726,7 +726,7 @@ impl QuadTree {
                         position: (
                             ((t.center.0 * 2 + t.size.0) * options.size) as i32,  // X position (centered on tile)
                             ((t.center.1 * 2 + t.size.1) * options.size) as i32,  // Y position (centered on tile)
-                            z - height as i32 + pos_adjust as i32,  // Z position (bottom of brick at terrain level)
+                            z - height as i32 + pos_adjust as i32 + 4 as i32,  // Z position (bottom of brick at terrain level)
                         ),
                         // Set collision properties based on options
                         collision: Collision {
