@@ -682,7 +682,7 @@ impl QuadTree {
                 // Calculate brick height based on height difference with neighbors
                 // This creates natural-looking terrain with varying brick heights
                 let raw_height = max(
-                    t.height as i32 - height_adjustment as i32,
+                    t.height as i32 - height_adjustment as i32 + 1,
                     2,  // Minimum height of 2 units
                 );
                 // Apply scaling and ensure minimum height
